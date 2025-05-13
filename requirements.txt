@@ -1,5 +1,5 @@
-python-telegram-bot==20.6
 fastapi
 uvicorn
-nest_asyncio
+nest-asyncio
 requests
+python-telegram-bot==20.6
