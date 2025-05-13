@@ -1,5 +1,15 @@
 {
+  "builds": [
+    {
+      "src": "api/bot.py",
+      "use": "@vercel/python"
+    }
+  ],
   "routes": [
-    { "src": "/api/bot", "methods": ["POST"], "dest": "/api/bot.py" }
+    {
+      "src": "/api/bot",
+      "methods": ["POST"],
+      "dest": "/api/bot.py"
+    }
   ]
 }
