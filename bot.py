@@ -1,133 +1,209 @@
-import requests
-from telegram import Bot, Update, InputMediaPhoto, InputMediaVideo
-from telegram.ext import Application, MessageHandler, CommandHandler, filters, CallbackContext
+import secrets
+import string
 import asyncio
-import nest_asyncio
-import random
-from keep_alive import keep_alive
+import threading
+from datetime import datetime
+from threading import Lock
+import requests
+from flask import Flask
+from telegram import Update, InputMediaPhoto, InputMediaVideo, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
 
-# Cho phép nest_asyncio để tránh xung đột vòng lặp
-nest_asyncio.apply()
-
+# Config
 BOT_TOKEN = "8064426886:AAE5Zr980N-8LhGgnXGqUXwqlPthvdKA9H0"
-API_KEY = "5d2e33c19847dea76f4fdb49695fd81aa669af86"
-API_URL = "https://vuotlink.vip/api"
+FIREBASE_URL = "https://bot-telegram-99852-default-rtdb.firebaseio.com/shared"
+CHANNEL_USERNAME = "@hoahocduong_vip"  # Đổi thành username kênh thực tế
 
-bot = Bot(token=BOT_TOKEN)
-media_groups = {}
-processing_tasks = {}
+# Thread-safe storage
+user_files = {}
+user_alias = {}
+user_protection = {}  # user_id: True = bảo vệ, False = không bảo vệ
+data_lock = Lock()
 
-async def start(update: Update, context: CallbackContext):
-    if not update.message or update.effective_chat.type != "private":
+def generate_alias(length=7):
+    date_prefix = datetime.now().strftime("%d%m%Y")
+    random_part = ''.join(secrets.choice(string.ascii_letters + string.digits) for _ in range(length))
+    return date_prefix + random_part
+
+async def check_channel_membership(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        user = update.effective_user
+        if not user:
+            return False
+            
+        # Kiểm tra thành viên kênh
+        member = await context.bot.get_chat_member(CHANNEL_USERNAME, user.id)
+        if member.status in ['member', 'administrator', 'creator']:
+            return True
+
+        # Tạo link xác nhận động
+        start_args = context.args
+        if update.message and update.message.text.startswith('/start') and start_args:
+            confirm_link = f"https://t.me/{context.bot.username}?start={start_args[0]}"
+        else:
+            confirm_link = f"https://t.me/{context.bot.username}?start=start"
+
+        # Tạo nút bấm
+        keyboard = [
+            [InlineKeyboardButton("🔥 THAM GIA KÊNH NGAY", url=f"https://t.me/{CHANNEL_USERNAME[1:]}")],
+            [InlineKeyboardButton("🔓 XÁC NHẬN ĐÃ THAM GIA", url=confirm_link)]
+        ]
+        
+        await update.message.reply_text(
+            "📛 BẠN PHẢI THAM GIA KÊNH TRƯỚC KHI SỬ DỤNG BOT!\n"
+            f"👉 Kênh yêu cầu: {CHANNEL_USERNAME}\n"
+            "✅ Sau khi tham gia, nhấn nút XÁC NHẬN để tiếp tục",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return False
+        
+    except Exception as e:
+        print(f"Lỗi kiểm tra kênh: {e}")
+        await update.message.reply_text("⚠️ Chết mẹ bot lỗi rồi, nhờ bạn báo cho admin @nothinginthissss (admin sẽ free cho bạn 1 link, cảm ơn bạn)")
+        return False
+
+# /start handler
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or not await check_channel_membership(update, context):
         return
-    await update.message.reply_text(
-        "**👋 Chào mừng bạn!😍**\n"
-        "**🔗 Gửi link bất kỳ để rút gọn.**\n"
-        "**📷 Chuyển tiếp bài viết kèm ảnh/video, bot sẽ giữ nguyên caption & rút gọn link trong caption.**\n"
-        "**💬 Mọi thắc mắc, hãy liên hệ admin.**",
-        parse_mode="Markdown"
-    )
 
-async def format_text(text: str) -> str:
-    lines = text.splitlines()
-    new_lines = []
-    for line in lines:
-        words = line.split()
-        new_words = []
-        for word in words:
-            if word.startswith("http"):
-                params = {"api": API_KEY, "url": word, "format": "text"}
-                response = requests.get(API_URL, params=params)
-                short_link = response.text.strip() if response.status_code == 200 else word
-                word = f"<s>{short_link}</s>"
+    user_id = update.message.from_user.id
+    protect = user_protection.get(user_id, True)
+
+    args = context.args
+    if args:
+        alias = args[0]
+        url = f"{FIREBASE_URL}/{alias}.json"
+
+        try:
+            res = await asyncio.to_thread(requests.get, url)
+            if res.status_code == 200 and res.json():
+                media_items = res.json()
+                media_group = []
+                text_content = []
+
+                for item in media_items:
+                    if item["type"] == "photo":
+                        media_group.append(InputMediaPhoto(item["file_id"]))
+                    elif item["type"] == "video":
+                        media_group.append(InputMediaVideo(item["file_id"]))
+                    elif item["type"] == "text":
+                        text_content.append(item["file_id"])
+
+                if text_content:
+                    await update.message.reply_text("\n\n".join(text_content), protect_content=protect)
+
+                for i in range(0, len(media_group), 10):
+                    await update.message.reply_media_group(media_group[i:i+10], protect_content=protect)
+                    await asyncio.sleep(0.5)
             else:
-                word = f"<b>{word}</b>"
-            new_words.append(word)
-        new_lines.append(" ".join(new_words))
+                await update.message.reply_text("❌ Không tìm thấy dữ liệu với mã này.")
+        except Exception:
+            await update.message.reply_text("🔒 Lỗi kết nối database")
+    else:
+        await update.message.reply_text("📥 Gửi lệnh để bắt đầu tạo liên kết lưu trữ nội dung. Nếu bạn muốn sử dụng miễn phí hãy liên hệ @nothinginthissss để được cấp quyền")
 
-    new_lines.append(
-        '\n<b>Báo lỗi + đóng góp video tại đây</b> @nothinginthissss (có lỗi sẽ đền bù)\n'
-        '<b>Theo dõi thông báo tại đây</b> @linkdinhcaovn\n'
-        '<b>CÁCH XEM LINK(lỗi bot không gửi video):</b> @HuongDanVuotLink_SachKhongChu\n\n'
-        '⚠️<b>Kênh xem không cần vượt :</b> <a href="https://t.me/linkdinhcaovn/4">ấn vào đây!</a>'
-    )
-
-    return "\n".join(new_lines)
-
-async def process_media_group(mgid: str, chat_id: int):
-    await asyncio.sleep(random.uniform(3, 5))
-    group = media_groups.pop(mgid, [])
-    if not group:
-        await bot.send_message(chat_id=chat_id, text="⚠️ Bài viết không hợp lệ hoặc thiếu ảnh/video.")
+# /newlink handler
+async def newlink(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or not await check_channel_membership(update, context):
         return
 
-    group.sort(key=lambda m: m.message_id)
-    caption = await format_text(group[0].caption) if group[0].caption else None
-    media = []
+    user_id = update.message.from_user.id
+    with data_lock:
+        user_files[user_id] = []
+        user_alias[user_id] = generate_alias()
+    await update.message.reply_text("✅ Bây giờ bạn có thể gửi ảnh, video hoặc text. Khi xong hãy nhắn /done để tạo link.")
 
-    for i, msg in enumerate(group):
-        if msg.photo:
-            file_id = msg.photo[-1].file_id
-            media.append(InputMediaPhoto(file_id, caption=caption if i == 0 else None, parse_mode="HTML"))
-        elif msg.video:
-            file_id = msg.video.file_id
-            media.append(InputMediaVideo(file_id, caption=caption if i == 0 else None, parse_mode="HTML"))
-
-    if not media:
-        await bot.send_message(chat_id=chat_id, text="⚠️ Bài viết không có ảnh hoặc video hợp lệ.")
+# handle ảnh/video/text
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or not await check_channel_membership(update, context):
         return
+
+    user_id = update.message.from_user.id
+    with data_lock:
+        if user_id not in user_files:
+            return
+
+    if update.message.photo:
+        file_id = update.message.photo[-1].file_id
+        entry = {"file_id": file_id, "type": "photo"}
+    elif update.message.video:
+        file_id = update.message.video.file_id
+        entry = {"file_id": file_id, "type": "video"}
+    elif update.message.text:
+        text = update.message.text
+        entry = {"file_id": text, "type": "text"}
+    else:
+        return
+
+    with data_lock:
+        if entry not in user_files[user_id]:
+            user_files[user_id].append(entry)
+
+# /done handler
+async def done(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or not await check_channel_membership(update, context):
+        return
+
+    user_id = update.message.from_user.id
+    with data_lock:
+        files = user_files.get(user_id, [])
+        alias = user_alias.get(user_id)
+        user_files.pop(user_id, None)
+        user_alias.pop(user_id, None)
+
+    if not files or not alias:
+        await update.message.reply_text("❌ Bạn chưa bắt đầu bằng link hoặc chưa gửi nội dung.")
+        return
+
+    url = f"{FIREBASE_URL}/{alias}.json"
 
     try:
-        await bot.send_media_group(chat_id=chat_id, media=media)
-    except Exception as e:
-        print(f"Lỗi khi gửi media_group: {e}")
-        await bot.send_message(chat_id=chat_id, text="⚠️ Gửi bài viết thất bại. Có thể do file lỗi hoặc Telegram bị giới hạn.")
-
-async def shorten_link(update: Update, context: CallbackContext):
-    if not update.message or update.effective_chat.type != "private":
-        return
-
-    if update.message.media_group_id:
-        mgid = update.message.media_group_id
-        if mgid not in media_groups:
-            media_groups[mgid] = []
-            processing_tasks[mgid] = asyncio.create_task(process_media_group(mgid, update.effective_chat.id))
-        media_groups[mgid].append(update.message)
-        return
-
-    if update.message.text and update.message.text.startswith("http"):
-        params = {"api": API_KEY, "url": update.message.text.strip(), "format": "text"}
-        response = requests.get(API_URL, params=params)
+        response = await asyncio.to_thread(requests.put, url, json=files)
         if response.status_code == 200:
-            short_link = response.text.strip()
-            message = (
-                "📢 <b>Bạn có link rút gọn mới</b>\n"
-                f"🔗 <b>Link gốc:</b> <s>{update.message.text}</s>\n"
-                f"🔍 <b>Link rút gọn:</b> {short_link}\n\n"
-                '⚠️<b>Kênh xem không cần vượt :</b> <a href="https://t.me/sachkhongchuu/299">ấn vào đây</a>'
+            link = f"https://t.me/upbaiviet_bot?start={alias}"
+            await update.message.reply_text(
+                f"✅ Đã lưu thành công!\n🔗 Link truy cập: {link}\n"
+                f"📦 Tổng số nội dung: {len(files)} (Ảnh/Video/Text)"
             )
-            await update.message.reply_text(message, parse_mode="HTML")
+        else:
+            await update.message.reply_text("❌ Có vẻ link này bị lỗi, báo lỗi cho @nothinginthissss")
+    except Exception:
+        await update.message.reply_text("🔒Nếu bạn chưa thấy video, báo ngay cho admin @nothinginthissss để được hỗ trợ nhé, cảm ơn bạn!")
+
+# /sigmaboy on/off
+async def sigmaboy(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or not await check_channel_membership(update, context):
         return
+    user_id = update.message.from_user.id
+    args = context.args
+    if args and args[0].lower() == "on":
+        user_protection[user_id] = False  # Mở khóa
+    elif args and args[0].lower() == "off":
+        user_protection[user_id] = True   # Bảo vệ
+    await update.message.reply_text(".")  # Phản hồi ngầm
 
-    if update.message.forward_origin:
-        caption = update.message.caption or ""
-        new_caption = await format_text(caption)
-        await update.message.copy(chat_id=update.effective_chat.id, caption=new_caption, parse_mode="HTML")
+# Flask web server
+app_web = Flask(__name__)
 
-def main():
-    # 1) Giữ bot luôn "sống" qua Flask
-    keep_alive()
+@app_web.route('/')
+def home():
+    return "Bot is running!"
 
-    # 2) Khởi tạo và đăng ký handlers
+def run_web():
+    app_web.run(host="0.0.0.0", port=8000)
+
+# Chạy bot Telegram
+def run_bot():
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, shorten_link))
-    app.add_handler(MessageHandler(filters.PHOTO | filters.VIDEO | filters.FORWARDED, shorten_link))
+    app.add_handler(CommandHandler("newlink", newlink))
+    app.add_handler(CommandHandler("done", done))
+    app.add_handler(CommandHandler("sigmaboy", sigmaboy))
+    app.add_handler(MessageHandler(filters.PHOTO | filters.VIDEO | (filters.TEXT & ~filters.COMMAND), handle_message))
+    app.run_polling()
 
-    print("✅ Bot đang chạy...")
-
-    # 3) Bắt đầu polling, không đóng loop khi kết thúc
-    app.run_polling(close_loop=False)
-
-if __name__ == "__main__":
-    main()
+# Chạy cả bot và web server
+if __name__ == '__main__':
+    threading.Thread(target=run_web).start()
+    run_bot()
