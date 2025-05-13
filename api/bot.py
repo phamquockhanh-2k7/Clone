@@ -1,4 +1,3 @@
-
 import os
 import requests
 import random
@@ -6,12 +5,13 @@ import asyncio
 import telegram
 from telegram import InputMediaPhoto, InputMediaVideo, Update
 from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
-from telegram.ext.webhook import WebhookServer
 from fastapi import FastAPI, Request
 from nest_asyncio import apply
 
+# Áp dụng nest_asyncio để hỗ trợ async trong môi trường không đồng bộ
 apply()
 
+# Cấu hình bot và các API cần thiết
 BOT_TOKEN = "8064426886:AAE5Zr980N-8LhGgnXGqUXwqlPthvdKA9H0"
 API_KEY = "5d2e33c19847dea76f4fdb49695fd81aa669af86"
 API_URL = "https://vuotlink.vip/api"
@@ -20,9 +20,11 @@ bot = telegram.Bot(token=BOT_TOKEN)
 media_groups = {}
 processing_tasks = {}
 
+# Tạo ứng dụng FastAPI
 app = FastAPI()
 telegram_app = Application.builder().token(BOT_TOKEN).build()
 
+# Hàm xử lý lệnh /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or update.effective_chat.type != "private":
         return
@@ -34,6 +36,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown"
     )
 
+# Hàm định dạng lại text và rút gọn link
 async def format_text(text: str) -> str:
     lines = text.splitlines()
     new_lines = []
@@ -60,6 +63,7 @@ async def format_text(text: str) -> str:
 
     return "\n".join(new_lines)
 
+# Hàm xử lý nhóm media (ảnh/video)
 async def process_media_group(mgid: str, chat_id: int):
     await asyncio.sleep(random.uniform(3, 5))
     group = media_groups.pop(mgid, [])
@@ -89,6 +93,7 @@ async def process_media_group(mgid: str, chat_id: int):
         print(f"Lỗi khi gửi media_group: {e}")
         await bot.send_message(chat_id=chat_id, text="⚠️ Gửi bài viết thất bại.")
 
+# Hàm xử lý liên kết rút gọn
 async def shorten_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or update.effective_chat.type != "private":
         return
@@ -135,13 +140,20 @@ async def shorten_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
         new_caption = await format_text(caption)
         await update.message.copy(chat_id=update.effective_chat.id, caption=new_caption, parse_mode="HTML")
 
+# Thêm các handler cho Telegram bot
 telegram_app.add_handler(CommandHandler("start", start))
 telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, shorten_link))
 telegram_app.add_handler(MessageHandler(filters.PHOTO | filters.VIDEO | filters.FORWARDED, shorten_link))
 
+# Định nghĩa webhook cho FastAPI
 @app.post("/api/bot")
 async def webhook(request: Request):
     data = await request.json()
     update = telegram.Update.de_json(data, bot)
     await telegram_app.process_update(update)
     return {"ok": True}
+
+# Route gốc để kiểm tra bot có đang chạy không
+@app.get("/")
+async def root():
+    return {"message": "Bot is running!"}
