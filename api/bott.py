@@ -10,7 +10,7 @@ from telegram import Update, InputMediaPhoto, InputMediaVideo, InlineKeyboardBut
 from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
 
 # Config
-BOT_TOKEN = "7851783179:AAFu58Cs9w1Z7i-xU4pPhnISgg0Sq3vfaPs"
+BOT_TOKEN = "7648462649:AAHsPnWL7IlsGgtkTNxdHBm3xCmDbFbfjLU"
 FIREBASE_URL = "https://bot-telegram-99852-default-rtdb.firebaseio.com/shared"
 CHANNEL_USERNAME = "@hoahocduong_vip"  # Đổi thành username kênh thực tế
 
